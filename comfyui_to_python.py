@@ -14,9 +14,6 @@ import black
 
 from comfyui_to_python_utils import (
     import_custom_nodes,
-    find_path,
-    add_comfyui_directory_to_sys_path,
-    add_extra_model_paths,
     get_value_at_index,
 )
 
@@ -266,6 +263,7 @@ class CodeGenerator:
             inputs = self.update_inputs(inputs, executed_variables)
 
             if is_special_function:
+                special_functions_code.append(self.start_timer_call_code(initialized_objects[class_type] + "." + class_def.FUNCTION, is_special_function))
                 special_functions_code.append(
                     self.create_function_call_code(
                         initialized_objects[class_type],
@@ -275,7 +273,10 @@ class CodeGenerator:
                         **inputs,
                     )
                 )
+                special_functions_code.append(self.end_timer_call_node(is_special_function))
+                special_functions_code.append("")
             else:
+                code.append(self.start_timer_call_code(initialized_objects[class_type] + "." + class_def.FUNCTION, is_special_function))
                 code.append(
                     self.create_function_call_code(
                         initialized_objects[class_type],
@@ -285,6 +286,8 @@ class CodeGenerator:
                         **inputs,
                     )
                 )
+                code.append(self.end_timer_call_node(is_special_function))
+                code.append("")
 
         # Generate final code by combining imports and code, and wrap them in a main function
         final_code = self.assemble_python_code(
@@ -292,6 +295,24 @@ class CodeGenerator:
         )
 
         return final_code
+
+    def start_timer_call_code(self, msg, is_special):
+        inputs = {"msg": msg}
+        return self.create_function_call_code(
+            "u",
+            "t",
+            "t",
+            is_special,
+            **inputs
+        )
+
+    def end_timer_call_node(self, is_special):
+        return self.create_function_call_code(
+            "t",
+            "end",
+            None,
+            is_special
+        )
 
     def create_function_call_code(
         self,
@@ -316,7 +337,10 @@ class CodeGenerator:
         args = ", ".join(self.format_arg(key, value) for key, value in kwargs.items())
 
         # Generate the Python code
-        code = f"{variable_name} = {obj_name}.{func}({args})\n"
+        if variable_name is None:
+            code = f"{obj_name}.{func}({args})"
+        else:
+            code = f"{variable_name} = {obj_name}.{func}({args})"
 
         # If the code contains dependencies and is not a loader or encoder, indent the code because it will be placed inside
         # of a for loop
@@ -381,6 +405,8 @@ class CodeGenerator:
                 "import sys",
                 "from typing import Sequence, Mapping, Any, Union",
                 "import torch",
+                "from gpu_worker import utils as u",
+                "from gpu_worker.comfy_nodes import tensors_to_pil_images",
             ]
             + func_strings
             # + ["\n\nadd_comfyui_directory_to_sys_path()\nadd_extra_model_paths()\n"]
@@ -392,13 +418,20 @@ class CodeGenerator:
         else:
             custom_nodes = ""
         # Create import statements for node classes
+        import_statements = sorted(import_statements)
         imports_code = [
             f"from nodes import {', '.join([class_name for class_name in import_statements])}"
         ]
+        preload_checkpoints_code = (
+            "def preload_checkpoints(global_cache):\n"
+            + "\tif \"import_custom_nodes\" not in global_cache:\n"
+            + "\t\timport_custom_nodes()\n"
+            + "\t\tglobal_cache[\"import_custom_nodes\"] = True\n\n"
+        )
         # Assemble the main function code, including custom nodes if applicable
         main_function_code = (
-            "def main():\n\t"
-            + f"{custom_nodes}with torch.inference_mode():\n\t\t"
+            "def main(base_img, modi_img, count, checkpoints):\n\t"
+            + "with torch.inference_mode():\n\t\t"
             + "\n\t\t".join(speical_functions_code)
             + f"\n\n\t\tfor q in range({queue_size}):\n\t\t"
             + "\n\t\t".join(code)
@@ -407,7 +440,7 @@ class CodeGenerator:
         final_code = "\n".join(
             static_imports
             + imports_code
-            + ["", main_function_code, "", 'if __name__ == "__main__":', "\tmain()"]
+            + ["", preload_checkpoints_code, "", main_function_code, "", 'if __name__ == "__main__":', "\tmain()"]
         )
         # Format the final code according to PEP 8 using the Black library
         final_code = black.format_str(final_code, mode=black.Mode())
@@ -525,15 +558,6 @@ class ComfyUItoPython:
             node_class_mappings (Dict): Mappings of node classes. Defaults to NODE_CLASS_MAPPINGS.
             needs_init_custom_nodes (bool): Whether to initialize custom nodes. Defaults to False.
         """
-        inpupts={"arg1": True}
-        print(CodeGenerator({}, {}).create_function_call_code(
-            "u",
-            "t",
-            "t",
-            True,
-            **inpupts
-        ))
-        exit(0)
         if input_file and workflow:
             raise ValueError("Can't provide both input_file and workflow")
         elif not input_file and not workflow:

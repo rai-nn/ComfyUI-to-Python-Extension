@@ -20,7 +20,7 @@ from comfyui_to_python_utils import (
     get_value_at_index,
 )
 
-add_comfyui_directory_to_sys_path()
+# add_comfyui_directory_to_sys_path()
 from nodes import NODE_CLASS_MAPPINGS
 
 
@@ -368,9 +368,9 @@ class CodeGenerator:
         func_strings = []
         for func in [
             get_value_at_index,
-            find_path,
-            add_comfyui_directory_to_sys_path,
-            add_extra_model_paths,
+            # find_path,
+            # add_comfyui_directory_to_sys_path,
+            # add_extra_model_paths,
         ]:
             func_strings.append(f"\n{inspect.getsource(func)}")
         # Define static import statements required for the script
@@ -383,7 +383,7 @@ class CodeGenerator:
                 "import torch",
             ]
             + func_strings
-            + ["\n\nadd_comfyui_directory_to_sys_path()\nadd_extra_model_paths()\n"]
+            # + ["\n\nadd_comfyui_directory_to_sys_path()\nadd_extra_model_paths()\n"]
         )
         # Check if custom nodes should be included
         if custom_nodes:
@@ -525,6 +525,15 @@ class ComfyUItoPython:
             node_class_mappings (Dict): Mappings of node classes. Defaults to NODE_CLASS_MAPPINGS.
             needs_init_custom_nodes (bool): Whether to initialize custom nodes. Defaults to False.
         """
+        inpupts={"arg1": True}
+        print(CodeGenerator({}, {}).create_function_call_code(
+            "u",
+            "t",
+            "t",
+            True,
+            **inpupts
+        ))
+        exit(0)
         if input_file and workflow:
             raise ValueError("Can't provide both input_file and workflow")
         elif not input_file and not workflow:

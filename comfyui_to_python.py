@@ -1,3 +1,11 @@
+# TODO
+# - remove unused code
+# - replace input arguments
+# - replace last saveimage with tensor_to_pill call
+# - automatically preload checkpoints that don't depend on inputs
+# - remove the range(1) loop?
+# - add missing "prompt" argument
+
 import copy
 import glob
 import inspect

@@ -1,6 +1,3 @@
-# TODO
-# - automatically preload checkpoints that don't depend on inputs
-
 import copy
 import glob
 import inspect
@@ -106,7 +103,7 @@ class LoadOrderDeterminer:
         self.node_class_mappings = node_class_mappings
         self.visited = {}
         self.load_order = []
-        self.is_special_function = False
+        self.is_special_fn = {}
 
     def _find_output_node(self):
         matched_ids = []
@@ -133,6 +130,11 @@ class LoadOrderDeterminer:
         self._show_ignored_nodes()
         return self.load_order
 
+    def _is_user_input(self, input_val):
+        if type(input_val) == str:
+            if re.search(r"<input:(\w+)>", input_val): return True
+        return False
+
     def _dfs(self, key: str) -> None:
         """Depth-First Search function to determine the load order.
 
@@ -144,15 +146,25 @@ class LoadOrderDeterminer:
         """
         # Mark the node as visited.
         self.visited[key] = True
+        is_special_fn = True
         inputs = self.data[key]["inputs"]
         # Loop over each input key.
         for input_key, val in inputs.items():
+            # If any direct input is user input, this node can't be special (preloaded)
+            if self._is_user_input(val):
+                print("USER INPUT", key, val)
+                is_special_fn = False
             # If the value is a list and the first item in the list has not been visited yet,
             # then recursively apply DFS on the dependency.
-            if isinstance(val, list) and val[0] not in self.visited:
-                self._dfs(val[0])
+            if isinstance(val, list):
+                if val[0] not in self.visited:
+                    self._dfs(val[0])
+                # If any input is not special, this node can't be either.
+                if not self.is_special_fn[val[0]]:
+                    is_special_fn = False
         # Add the key and its corresponding data to the load order list.
-        self.load_order.append((key, self.data[key], self.is_special_function))
+        self.load_order.append((key, self.data[key], is_special_fn))
+        self.is_special_fn[key] = is_special_fn
 
 
 class CodeGenerator:
@@ -206,9 +218,12 @@ class CodeGenerator:
         # This dictionary will store the names of the objects that we have already initialized
         initialized_objects = {}
 
+        special_variables = set()
+
         custom_nodes = False
         # Loop over each dictionary in the load order list
         for idx, data, is_special_function in load_order:
+
             # Generate class definition and inputs from the data
             inputs, class_type = data["inputs"], data["class_type"]
             input_types = self.node_class_mappings[class_type].INPUT_TYPES()
@@ -237,6 +252,7 @@ class CodeGenerator:
                     import_statements.add(import_statement)
                 if class_type not in self.base_node_class_mappings.keys():
                     custom_nodes = True
+                special_variables.add(initialized_objects[class_type])
                 special_functions_code.append(class_code)
 
             # Get all possible parameters for class_def
@@ -285,6 +301,7 @@ class CodeGenerator:
                 )
                 special_functions_code.append(self.end_timer_call_node(is_special_function))
                 special_functions_code.append("")
+                special_variables.add(executed_variables[idx])
             elif class_type == "SaveImage":
                 # Treat SaveImage as the return/output. Not the cleanest, but we assert exactly 1 SaveImage node (output) in LoadOrderDeterminer._find_output_node()
                 code.append(self.return_call_code(inputs))
@@ -304,7 +321,7 @@ class CodeGenerator:
 
         # Generate final code by combining imports and code, and wrap them in a main function
         final_code = self.assemble_python_code(
-            import_statements, special_functions_code, code, queue_size, custom_nodes
+            import_statements, special_functions_code, special_variables, code, queue_size, custom_nodes
         )
 
         return final_code
@@ -389,6 +406,7 @@ class CodeGenerator:
         self,
         import_statements: set,
         speical_functions_code: List[str],
+        special_variables: set[str],
         code: List[str],
         queue_size: int,
         custom_nodes=False,
@@ -439,19 +457,26 @@ class CodeGenerator:
         imports_code = [
             f"from nodes import {', '.join([class_name for class_name in import_statements])}"
         ]
+        special_variables_code = ", ".join(special_variables)
         preload_checkpoints_code = (
             "def preload_checkpoints(global_cache):\n"
             + "\tif \"import_custom_nodes\" not in global_cache:\n"
             + "\t\timport_custom_nodes()\n"
             + "\t\tglobal_cache[\"import_custom_nodes\"] = True\n\n"
+            + "\twith torch.inference_mode():\n\t\t"
+            + "\n\t\t".join(speical_functions_code)
+            + "\n\n\t\t"
+            + f"return ({special_variables_code})"
+            + "\n\n"
         )
         main_args = ", ".join(sorted(self._main_args) + ["checkpoints"])
         # Assemble the main function code, including custom nodes if applicable
         main_function_code = (
             f"def main({main_args}):\n\t"
+            + f"{special_variables_code} = checkpoints\n\t"
             + "with torch.inference_mode():\n\t\t"
-            + "\n\t\t".join(speical_functions_code)
-            + "\n\n\t\t"
+            # + "\n\t\t".join(speical_functions_code)
+            # + "\n\n\t\t"
             # + f"\n\n\t\tfor q in range({queue_size}):\n\t\t"
             + "\n\t\t".join(code)
         )

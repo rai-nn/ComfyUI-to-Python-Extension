@@ -26,6 +26,7 @@ from comfyui_to_python_utils import (
 )
 
 # add_comfyui_directory_to_sys_path()
+# This requires ComfyUI to be in PYTHONPATH
 from nodes import NODE_CLASS_MAPPINGS
 
 
@@ -118,8 +119,8 @@ class LoadOrderDeterminer:
         Returns:
             List[Tuple[str, Dict, bool]]: A list of tuples representing the load order.
         """
-        self._load_special_functions_first()
-        self.is_special_function = False
+        # self._load_special_functions_first()
+        # self.is_special_function = False
         for key in self.data:
             if key not in self.visited:
                 self._dfs(key)
@@ -145,28 +146,6 @@ class LoadOrderDeterminer:
                 self._dfs(val[0])
         # Add the key and its corresponding data to the load order list.
         self.load_order.append((key, self.data[key], self.is_special_function))
-
-    def _load_special_functions_first(self) -> None:
-        """Load functions without dependencies, loaderes, and encoders first.
-
-        Returns:
-            None
-        """
-        # Iterate over each key in the data to check for loader keys.
-        for key in self.data:
-            class_def = self.node_class_mappings[self.data[key]["class_type"]]()
-            # Check if the class is a loader class or meets specific conditions.
-            if (
-                class_def.CATEGORY == "loaders"
-                or class_def.FUNCTION in ["encode"]
-                or not any(
-                    isinstance(val, list) for val in self.data[key]["inputs"].values()
-                )
-            ):
-                self.is_special_function = True
-                # If the key has not been visited, perform a DFS from that key.
-                if key not in self.visited:
-                    self._dfs(key)
 
 
 class CodeGenerator:
@@ -336,7 +315,7 @@ class CodeGenerator:
             obj_name (str): The name of the initialized object.
             func (str): The function to be called.
             variable_name (str): The name of the variable that the function result should be assigned to.
-            is_special_function (bool): Determines the code indentation.
+            is_special_function (bool): Ignored now.
             **kwargs: The keyword arguments for the function.
 
         Returns:
@@ -349,11 +328,6 @@ class CodeGenerator:
             code = f"{obj_name}.{func}({args})"
         else:
             code = f"{variable_name} = {obj_name}.{func}({args})"
-
-        # If the code contains dependencies and is not a loader or encoder, indent the code because it will be placed inside
-        # of a for loop
-        if not is_special_function:
-            code = f"\t{code}"
 
         return code
 
@@ -441,14 +415,15 @@ class CodeGenerator:
             "def main(base_img, modi_img, count, checkpoints):\n\t"
             + "with torch.inference_mode():\n\t\t"
             + "\n\t\t".join(speical_functions_code)
-            + f"\n\n\t\tfor q in range({queue_size}):\n\t\t"
+            + "\n\n\t\t"
+            # + f"\n\n\t\tfor q in range({queue_size}):\n\t\t"
             + "\n\t\t".join(code)
         )
         # Concatenate all parts to form the final code
         final_code = "\n".join(
             static_imports
             + imports_code
-            + ["", preload_checkpoints_code, "", main_function_code, "", 'if __name__ == "__main__":', "\tmain()"]
+            + ["", preload_checkpoints_code, "", main_function_code, ""]
         )
         # Format the final code according to PEP 8 using the Black library
         final_code = black.format_str(final_code, mode=black.Mode())

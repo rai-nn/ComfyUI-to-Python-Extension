@@ -1,9 +1,6 @@
 # TODO
-# - remove unused code
-# - replace input arguments
 # - replace last saveimage with tensor_to_pill call
 # - automatically preload checkpoints that don't depend on inputs
-# - remove the range(1) loop?
 # - add missing "prompt" argument
 
 import copy
@@ -113,17 +110,29 @@ class LoadOrderDeterminer:
         self.load_order = []
         self.is_special_function = False
 
+    def _find_output_node(self):
+        matched_ids = []
+        for id, node in self.data.items():
+            if node["class_type"] == "SaveImage":
+                matched_ids.append(id)
+        assert len(matched_ids) == 1, "Require exactly 1 output node (SaveImage)"
+        return matched_ids[0]
+
+    def _show_ignored_nodes(self):
+        for id, node in self.data.items():
+            if id not in self.visited:
+                print("IGNORING UNUSED NODE", id, node["class_type"])
+
     def determine_load_order(self) -> List[Tuple[str, Dict, bool]]:
         """Determine the load order for the given data.
 
         Returns:
             List[Tuple[str, Dict, bool]]: A list of tuples representing the load order.
         """
-        # self._load_special_functions_first()
-        # self.is_special_function = False
-        for key in self.data:
-            if key not in self.visited:
-                self._dfs(key)
+        # Depth-first search starting from the output node
+        self._dfs(self._find_output_node())
+        # Show ignored (unused nodes):
+        self._show_ignored_nodes()
         return self.load_order
 
     def _dfs(self, key: str) -> None:
@@ -165,6 +174,15 @@ class CodeGenerator:
         """
         self.node_class_mappings = node_class_mappings
         self.base_node_class_mappings = base_node_class_mappings
+        self._main_args = set()
+
+    def _process_input(self, val, key, node_id, node):
+        if type(val) == str:
+            m = re.search(r"<input:(\w+)>", val)
+            if m:
+                self._main_args.add(m.group(1))
+                return {"variable_name": m.group(1)}
+        return val
 
     def generate_workflow(
         self,
@@ -231,7 +249,7 @@ class CodeGenerator:
 
             # Remove any keyword arguments from **inputs if they are not in class_def_params
             inputs = {
-                key: value
+                key: self._process_input(value, key, idx, data)
                 for key, value in inputs.items()
                 if no_params or key in class_def_params
             }
@@ -410,9 +428,10 @@ class CodeGenerator:
             + "\t\timport_custom_nodes()\n"
             + "\t\tglobal_cache[\"import_custom_nodes\"] = True\n\n"
         )
+        main_args = ", ".join(sorted(self._main_args) + ["checkpoints"])
         # Assemble the main function code, including custom nodes if applicable
         main_function_code = (
-            "def main(base_img, modi_img, count, checkpoints):\n\t"
+            f"def main({main_args}):\n\t"
             + "with torch.inference_mode():\n\t\t"
             + "\n\t\t".join(speical_functions_code)
             + "\n\n\t\t"

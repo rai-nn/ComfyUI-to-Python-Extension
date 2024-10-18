@@ -103,7 +103,7 @@ class LoadOrderDeterminer:
         self.node_class_mappings = node_class_mappings
         self.visited = {}
         self.load_order = []
-        self.is_special_fn = {}
+        self.is_preloadable = {}
 
     def _find_output_node(self):
         matched_ids = []
@@ -146,25 +146,25 @@ class LoadOrderDeterminer:
         """
         # Mark the node as visited.
         self.visited[key] = True
-        is_special_fn = True
+        is_preloadable = True
         inputs = self.data[key]["inputs"]
         # Loop over each input key.
         for input_key, val in inputs.items():
-            # If any direct input is user input, this node can't be special (preloaded)
+            # If any direct input is user input, this node can't be preloaded.
             if self._is_user_input(val):
                 print("USER INPUT", key, val)
-                is_special_fn = False
+                is_preloadable = False
             # If the value is a list and the first item in the list has not been visited yet,
             # then recursively apply DFS on the dependency.
             if isinstance(val, list):
                 if val[0] not in self.visited:
                     self._dfs(val[0])
-                # If any input is not special, this node can't be either.
-                if not self.is_special_fn[val[0]]:
-                    is_special_fn = False
+                # If any input is not preloadable, this node can't be either.
+                if not self.is_preloadable[val[0]]:
+                    is_preloadable = False
         # Add the key and its corresponding data to the load order list.
-        self.load_order.append((key, self.data[key], is_special_fn))
-        self.is_special_fn[key] = is_special_fn
+        self.load_order.append((key, self.data[key], is_preloadable))
+        self.is_preloadable[key] = is_preloadable
 
 
 class CodeGenerator:
@@ -209,7 +209,7 @@ class CodeGenerator:
             str: Generated execution code as a string.
         """
         # Create the necessary data structures to hold imports and generated code
-        import_statements, executed_variables, special_functions_code, code = (
+        import_statements, executed_variables, preloadable_code, code = (
             set(["NODE_CLASS_MAPPINGS"]),
             {},
             [],
@@ -218,11 +218,11 @@ class CodeGenerator:
         # This dictionary will store the names of the objects that we have already initialized
         initialized_objects = {}
 
-        special_variables = set()
+        preloadable_variables = set()
 
         custom_nodes = False
         # Loop over each dictionary in the load order list
-        for idx, data, is_special_function in load_order:
+        for idx, data, is_preloadable in load_order:
 
             # Generate class definition and inputs from the data
             inputs, class_type = data["inputs"], data["class_type"]
@@ -252,8 +252,8 @@ class CodeGenerator:
                     import_statements.add(import_statement)
                 if class_type not in self.base_node_class_mappings.keys():
                     custom_nodes = True
-                special_variables.add(initialized_objects[class_type])
-                special_functions_code.append(class_code)
+                preloadable_variables.add(initialized_objects[class_type])
+                preloadable_code.append(class_code)
 
             # Get all possible parameters for class_def
             class_def_params, class_def_required_params = self.get_function_parameters(
@@ -288,40 +288,38 @@ class CodeGenerator:
             executed_variables[idx] = f"{self.clean_variable_name(class_type)}_{idx}"
             inputs = self.update_inputs(inputs, executed_variables)
 
-            if is_special_function:
-                special_functions_code.append(self.start_timer_call_code(initialized_objects[class_type] + "." + class_def.FUNCTION, is_special_function))
-                special_functions_code.append(
+            if is_preloadable:
+                preloadable_code.append(self.start_timer_call_code(initialized_objects[class_type] + "." + class_def.FUNCTION))
+                preloadable_code.append(
                     self.create_function_call_code(
                         initialized_objects[class_type],
                         class_def.FUNCTION,
                         executed_variables[idx],
-                        is_special_function,
                         **inputs,
                     )
                 )
-                special_functions_code.append(self.end_timer_call_node(is_special_function))
-                special_functions_code.append("")
-                special_variables.add(executed_variables[idx])
+                preloadable_code.append(self.end_timer_call_node())
+                preloadable_code.append("")
+                preloadable_variables.add(executed_variables[idx])
             elif class_type == "SaveImage":
                 # Treat SaveImage as the return/output. Not the cleanest, but we assert exactly 1 SaveImage node (output) in LoadOrderDeterminer._find_output_node()
                 code.append(self.return_call_code(inputs))
             else:
-                code.append(self.start_timer_call_code(initialized_objects[class_type] + "." + class_def.FUNCTION, is_special_function))
+                code.append(self.start_timer_call_code(initialized_objects[class_type] + "." + class_def.FUNCTION))
                 code.append(
                     self.create_function_call_code(
                         initialized_objects[class_type],
                         class_def.FUNCTION,
                         executed_variables[idx],
-                        is_special_function,
                         **inputs,
                     )
                 )
-                code.append(self.end_timer_call_node(is_special_function))
+                code.append(self.end_timer_call_node())
                 code.append("")
 
         # Generate final code by combining imports and code, and wrap them in a main function
         final_code = self.assemble_python_code(
-            import_statements, special_functions_code, special_variables, code, queue_size, custom_nodes
+            import_statements, preloadable_code, preloadable_variables, code, queue_size, custom_nodes
         )
 
         return final_code
@@ -335,22 +333,20 @@ class CodeGenerator:
         arg = inputs["images"]["variable_name"]
         return f"return tensors_to_pil_images({arg})"
 
-    def start_timer_call_code(self, msg, is_special):
+    def start_timer_call_code(self, msg):
         inputs = {"msg": msg}
         return self.create_function_call_code(
             "u",
             "t",
             "t",
-            is_special,
             **inputs
         )
 
-    def end_timer_call_node(self, is_special):
+    def end_timer_call_node(self):
         return self.create_function_call_code(
             "t",
             "end",
             None,
-            is_special
         )
 
     def create_function_call_code(
@@ -358,7 +354,6 @@ class CodeGenerator:
         obj_name: str,
         func: str,
         variable_name: str,
-        is_special_function: bool,
         **kwargs,
     ) -> str:
         """Generate Python code for a function call.
@@ -367,7 +362,7 @@ class CodeGenerator:
             obj_name (str): The name of the initialized object.
             func (str): The function to be called.
             variable_name (str): The name of the variable that the function result should be assigned to.
-            is_special_function (bool): Ignored now.
+            is_preloadable (bool): Ignored now.
             **kwargs: The keyword arguments for the function.
 
         Returns:
@@ -405,8 +400,8 @@ class CodeGenerator:
     def assemble_python_code(
         self,
         import_statements: set,
-        speical_functions_code: List[str],
-        special_variables: set[str],
+        preloadable_code: List[str],
+        preloadable_variables: set[str],
         code: List[str],
         queue_size: int,
         custom_nodes=False,
@@ -415,7 +410,7 @@ class CodeGenerator:
 
         Args:
             import_statements (set): A set of unique import statements.
-            speical_functions_code (List[str]): A list of special functions code strings.
+            preloadable_code (List[str]): A list of special functions code strings.
             code (List[str]): A list of code strings.
             queue_size (int): Number of photos that will be generated by the script.
             custom_nodes (bool): Whether to include custom nodes in the code.
@@ -457,25 +452,25 @@ class CodeGenerator:
         imports_code = [
             f"from nodes import {', '.join([class_name for class_name in import_statements])}"
         ]
-        special_variables_code = ", ".join(special_variables)
+        preloadable_variables_code = ", ".join(sorted(preloadable_variables))
         preload_checkpoints_code = (
             "def preload_checkpoints(global_cache):\n"
             + "\tif \"import_custom_nodes\" not in global_cache:\n"
             + "\t\timport_custom_nodes()\n"
             + "\t\tglobal_cache[\"import_custom_nodes\"] = True\n\n"
             + "\twith torch.inference_mode():\n\t\t"
-            + "\n\t\t".join(speical_functions_code)
+            + "\n\t\t".join(preloadable_code)
             + "\n\n\t\t"
-            + f"return ({special_variables_code})"
+            + f"return ({preloadable_variables_code})"
             + "\n\n"
         )
         main_args = ", ".join(sorted(self._main_args) + ["checkpoints"])
         # Assemble the main function code, including custom nodes if applicable
         main_function_code = (
             f"def main({main_args}):\n\t"
-            + f"{special_variables_code} = checkpoints\n\t"
+            + f"{preloadable_variables_code} = checkpoints\n\t"
             + "with torch.inference_mode():\n\t\t"
-            # + "\n\t\t".join(speical_functions_code)
+            # + "\n\t\t".join(preloadable_code)
             # + "\n\n\t\t"
             # + f"\n\n\t\tfor q in range({queue_size}):\n\t\t"
             + "\n\t\t".join(code)

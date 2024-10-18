@@ -8,6 +8,7 @@ import sys
 import re
 from typing import Dict, List, Any, Callable, Tuple, TextIO
 from argparse import ArgumentParser
+from collections import defaultdict
 
 import black
 
@@ -113,11 +114,6 @@ class LoadOrderDeterminer:
         assert len(matched_ids) == 1, "Require exactly 1 output node (SaveImage)"
         return matched_ids[0]
 
-    def _show_ignored_nodes(self):
-        for id, node in self.data.items():
-            if id not in self.visited:
-                print("IGNORING UNUSED NODE", id, node["class_type"])
-
     def determine_load_order(self) -> List[Tuple[str, Dict, bool]]:
         """Determine the load order for the given data.
 
@@ -126,9 +122,32 @@ class LoadOrderDeterminer:
         """
         # Depth-first search starting from the output node
         self._dfs(self._find_output_node())
-        # Show ignored (unused nodes):
-        self._show_ignored_nodes()
         return self.load_order
+
+    def show_dependencies(self, nodes2repo_map):
+        deps = defaultdict(set)
+        unused = set()
+        for id, node in self.data.items():
+            node_class = node["class_type"]
+            if id not in self.visited:
+                unused.add((id, node_class))
+            else:
+                if node_class in nodes2repo_map:
+                    deps[nodes2repo_map[node_class]].add((id, node_class))
+                else:
+                    print(f"MISSING node {node_class} in nodes2repo map!")
+
+        if len(unused) > 0:
+            print("Ignoring unused nodes:")
+        for id, node in unused:
+            print(f"\t- #{id} {node}")
+
+        print("Dependencies:")
+        for repo, nodes in deps.items():
+            print(repo)
+            for id, node_class in nodes:
+                print(f"  - #{id} {node_class}")
+
 
     def _is_user_input(self, input_val):
         if type(input_val) == str:
@@ -639,6 +658,7 @@ class ComfyUItoPython:
         # Step 3: Determine the load order
         load_order_determiner = LoadOrderDeterminer(data, self.node_class_mappings)
         load_order = load_order_determiner.determine_load_order()
+        load_order_determiner.show_dependencies(FileHandler.read_json_file("nodes_repo_map.json"))
 
         # Step 4: Generate the workflow code
         code_generator = CodeGenerator(

@@ -1,7 +1,5 @@
 # TODO
-# - replace last saveimage with tensor_to_pill call
 # - automatically preload checkpoints that don't depend on inputs
-# - add missing "prompt" argument
 
 import copy
 import glob
@@ -242,7 +240,7 @@ class CodeGenerator:
                 special_functions_code.append(class_code)
 
             # Get all possible parameters for class_def
-            class_def_params = self.get_function_parameters(
+            class_def_params, class_def_required_params = self.get_function_parameters(
                 getattr(class_def, class_def.FUNCTION)
             )
             no_params = class_def_params is None
@@ -253,6 +251,13 @@ class CodeGenerator:
                 for key, value in inputs.items()
                 if no_params or key in class_def_params
             }
+
+            inputs = self.fix_known_missing_inputs(inputs, class_type)
+
+            # Check for missing params
+            for p in class_def_required_params:
+                assert p in inputs, f"Missing param `{p}`, node {idx} {class_type}"
+
             # Deal with hidden variables
             if (
                 "hidden" in input_types.keys()
@@ -280,6 +285,9 @@ class CodeGenerator:
                 )
                 special_functions_code.append(self.end_timer_call_node(is_special_function))
                 special_functions_code.append("")
+            elif class_type == "SaveImage":
+                # Treat SaveImage as the return/output. Not the cleanest, but we assert exactly 1 SaveImage node (output) in LoadOrderDeterminer._find_output_node()
+                code.append(self.return_call_code(inputs))
             else:
                 code.append(self.start_timer_call_code(initialized_objects[class_type] + "." + class_def.FUNCTION, is_special_function))
                 code.append(
@@ -300,6 +308,15 @@ class CodeGenerator:
         )
 
         return final_code
+
+    def fix_known_missing_inputs(self, inputs, class_type):
+        if class_type == "MathExpression|pysssss" and "prompt" not in inputs:
+            inputs["prompt"] = {"variable_name": "None"}
+        return inputs
+
+    def return_call_code(self, inputs):
+        arg = inputs["images"]["variable_name"]
+        return f"return tensors_to_pil_images({arg})"
 
     def start_timer_call_code(self, msg, is_special):
         inputs = {"msg": msg}
@@ -508,7 +525,9 @@ class CodeGenerator:
             param.kind == inspect.Parameter.VAR_KEYWORD
             for param in signature.parameters.values()
         )
-        return list(parameters.keys()) if not catch_all else None
+        accepted_params = list(parameters.keys()) if not catch_all else None
+        required_params = [name for name, param in signature.parameters.items() if param.default == param.empty and param.kind != inspect.Parameter.VAR_KEYWORD]
+        return accepted_params, required_params
 
     def update_inputs(self, inputs: Dict, executed_variables: Dict) -> Dict:
         """Update inputs based on the executed variables.
